@@ -46,5 +46,6 @@ couchdb = ["dep:reqwest"]
 full = ["redis", "memcached", "couchdb"]
 
 [dev-dependencies]
+cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
 tokio = { version = "1.35", features = ["full", "test-util"] }
 
