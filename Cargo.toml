@@ -1,39 +1,39 @@
 [package]
 name = "armature-session"
-version = "0.3.0"
-edition.workspace = true
-rust-version.workspace = true
-authors.workspace = true
-license.workspace = true
+version = "0.3.1"
+edition = "2024"
+rust-version = "1.94.1"
+authors = ["Joseph Quinn <quinn.josephr@proton.me>"]
+license = "Apache-2.0"
 repository = "https://github.com/quinnjr/armature-session"
-homepage.workspace = true
+homepage = "https://quinnjr.github.io/armature"
 description = "Session management for Armature applications"
 keywords = ["session", "storage", "redis", "cookies"]
 categories = ["web-programming", "caching"]
 
 [dependencies]
 # Logging
-armature-log = { path = "../armature-log", version = "0" }
+armature-log = { version = "0.2" }
 
 # Core dependencies
 async-trait = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 futures = "0.3"
-uuid = { version = "1.11", features = ["v4"] }
+uuid = { version = "1.26", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Redis support (default) - uses armature-redis for DI integration
-armature-redis = { path = "../armature-redis", version = "0", optional = true }
-redis = { version = "1.0", features = ["tokio-comp", "connection-manager"], optional = true }
+armature-redis = { version = "0.2", optional = true }
+redis = { version = "1.7", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Memcached support (optional feature flag)
-memcache = { version = "0.19", optional = true, default-features = false }
+memcache = { version = "0.21", optional = true, default-features = false }
 
 # CouchDB support (via HTTP client)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false, optional = true }
 
 [features]
 # Redis is the default backend
@@ -47,5 +47,5 @@ full = ["redis", "memcached", "couchdb"]
 
 [dev-dependencies]
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
-tokio = { version = "1.35", features = ["full", "test-util"] }
+tokio = { version = "1.53", features = ["full", "test-util"] }
 

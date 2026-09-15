@@ -230,4 +230,3 @@ mod tests {
         assert!(config.session_key("test-id").starts_with("session:"));
     }
 }
-

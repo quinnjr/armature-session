@@ -162,4 +162,3 @@ pub mod prelude {
     #[cfg(feature = "couchdb")]
     pub use crate::couchdb_session::CouchDbSessionStore;
 }
-

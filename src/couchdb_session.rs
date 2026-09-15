@@ -105,9 +105,10 @@ impl CouchDbSessionStore {
     /// # }
     /// ```
     pub async fn new(config: SessionConfig) -> SessionResult<Self> {
-        let database = config.database.as_ref().ok_or_else(|| {
-            SessionError::Config("CouchDB database name is required".to_string())
-        })?;
+        let database = config
+            .database
+            .as_ref()
+            .ok_or_else(|| SessionError::Config("CouchDB database name is required".to_string()))?;
 
         let base_url = format!("{}/{}", config.url.trim_end_matches('/'), database);
 
@@ -116,7 +117,7 @@ impl CouchDbSessionStore {
             .map_err(|e| SessionError::Connection(e.to_string()))?;
 
         // Verify connection by checking database exists
-        let url = format!("{}", base_url);
+        let url = base_url.to_string();
         let mut request = client.head(&url);
 
         if let (Some(username), Some(password)) = (&config.username, &config.password) {
@@ -171,8 +172,8 @@ impl CouchDbSessionStore {
     /// it can never be interpreted as additional path segments by CouchDB
     /// or the HTTP client.
     fn doc_url_from_id(&self, doc_id: &str) -> SessionResult<String> {
-        let mut url = Url::parse(&self.base_url)
-            .map_err(|e| SessionError::InvalidUrl(e.to_string()))?;
+        let mut url =
+            Url::parse(&self.base_url).map_err(|e| SessionError::InvalidUrl(e.to_string()))?;
 
         url.path_segments_mut()
             .map_err(|_| SessionError::InvalidUrl("CouchDB base URL cannot be a base".to_string()))?
@@ -500,17 +501,17 @@ impl SessionStore for CouchDbSessionStore {
 
         let mut deleted = 0;
         for row in view.rows {
-            if let Some(doc) = row.doc {
-                if let Some(rev) = doc.rev {
-                    let delete_url = format!("{}/{}?rev={}", self.base_url, doc.id, rev);
-                    if self
-                        .request(reqwest::Method::DELETE, &delete_url)
-                        .send()
-                        .await
-                        .is_ok()
-                    {
-                        deleted += 1;
-                    }
+            if let Some(doc) = row.doc
+                && let Some(rev) = doc.rev
+            {
+                let delete_url = format!("{}/{}?rev={}", self.base_url, doc.id, rev);
+                if self
+                    .request(reqwest::Method::DELETE, &delete_url)
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    deleted += 1;
                 }
             }
         }
@@ -534,7 +535,9 @@ mod tests {
     /// connectivity check, which requires a live CouchDB instance).
     fn make_store() -> CouchDbSessionStore {
         CouchDbSessionStore {
-            client: Client::builder().build().expect("client builds without network access"),
+            client: Client::builder()
+                .build()
+                .expect("client builds without network access"),
             config: SessionConfig::couchdb("http://localhost:5984", "sessions")
                 .expect("valid couchdb config"),
             base_url: "http://localhost:5984/sessions".to_string(),
@@ -621,7 +624,9 @@ mod tests {
     fn doc_id_accepts_well_formed_uuid() {
         let store = make_store();
         let session_id = generate_session_id();
-        let doc_id = store.doc_id(&session_id).expect("well-formed UUID accepted");
+        let doc_id = store
+            .doc_id(&session_id)
+            .expect("well-formed UUID accepted");
         assert_eq!(doc_id, format!("session:{session_id}"));
     }
 
@@ -637,4 +642,3 @@ mod tests {
         assert_eq!(url, "http://localhost:5984/sessions/session:not%2Freal");
     }
 }
-

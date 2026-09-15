@@ -68,4 +68,3 @@ pub enum SessionError {
     #[error("Session error: {0}")]
     Other(String),
 }
-
