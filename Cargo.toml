@@ -20,20 +20,20 @@ async-trait = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 futures = "0.3"
-uuid = { version = "1.11", features = ["v4"] }
+uuid = { version = "1.26", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Redis support (default) - uses armature-redis for DI integration
 armature-redis = { version = "0.2", optional = true }
-redis = { version = "1.0", features = ["tokio-comp", "connection-manager"], optional = true }
+redis = { version = "1.7", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Memcached support (optional feature flag)
-memcache = { version = "0.19", optional = true, default-features = false }
+memcache = { version = "0.21", optional = true, default-features = false }
 
 # CouchDB support (via HTTP client)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false, optional = true }
 
 [features]
 # Redis is the default backend
@@ -47,5 +47,5 @@ full = ["redis", "memcached", "couchdb"]
 
 [dev-dependencies]
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
-tokio = { version = "1.35", features = ["full", "test-util"] }
+tokio = { version = "1.53", features = ["full", "test-util"] }
 
