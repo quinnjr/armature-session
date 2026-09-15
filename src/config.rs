@@ -41,7 +41,7 @@ impl Default for SessionConfig {
             backend: SessionBackend::Redis,
             url: "redis://localhost:6379".to_string(),
             namespace: "session".to_string(),
-            default_ttl: Duration::from_secs(3600), // 1 hour
+            default_ttl: Duration::from_secs(3600),  // 1 hour
             max_ttl: Duration::from_secs(86400 * 7), // 7 days
             database: None,
             username: None,
@@ -181,4 +181,3 @@ impl SessionConfig {
         format!("{}:{}", self.namespace, session_id)
     }
 }
-

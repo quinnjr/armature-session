@@ -50,7 +50,9 @@ impl Session {
 
     /// Get a value from the session data.
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
-        self.data.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.data
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// Set a value in the session data.
@@ -271,4 +273,3 @@ pub trait SessionStore: Send + Sync {
 pub fn generate_session_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
-
