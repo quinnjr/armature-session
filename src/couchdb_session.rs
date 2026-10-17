@@ -4,7 +4,7 @@
 
 use crate::config::SessionConfig;
 use crate::error::{SessionError, SessionResult};
-use crate::traits::{Session, SessionStore, generate_session_id};
+use crate::traits::{Session, SessionStore, validate_session_id};
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,7 @@ impl CouchDbSessionStore {
     /// # }
     /// ```
     pub async fn new(config: SessionConfig) -> SessionResult<Self> {
+        config.validate()?;
         let database = config
             .database
             .as_ref()
@@ -150,17 +151,14 @@ impl CouchDbSessionStore {
     /// identifier that addresses exactly one session's own document, so it
     /// is validated here — the single place all CRUD paths funnel through —
     /// before it is ever used to build a document ID or request URL. Only
-    /// well-formed UUIDs (the format produced by [`generate_session_id`])
-    /// are accepted; anything else (e.g. a `session_id` containing `/`,
+    /// IDs of the exact shape produced by
+    /// [`generate_session_id`](crate::generate_session_id) (64 lowercase hex
+    /// characters, see [`validate_session_id`]) are accepted; anything else (e.g. a `session_id` containing `/`,
     /// `?`, or a CouchDB-reserved segment like `_design`) is rejected
     /// instead of being silently folded into a URL, where it could address
     /// a different document, attachment, or view within the database.
     fn doc_id(&self, session_id: &str) -> SessionResult<String> {
-        if uuid::Uuid::parse_str(session_id).is_err() {
-            return Err(SessionError::InvalidSessionId(format!(
-                "session_id must be a valid UUID, got: {session_id:?}"
-            )));
-        }
+        validate_session_id(session_id)?;
 
         Ok(format!("{}:{}", self.config.namespace, session_id))
     }
@@ -203,17 +201,9 @@ impl CouchDbSessionStore {
 #[async_trait]
 impl SessionStore for CouchDbSessionStore {
     async fn create(&self, ttl: Option<Duration>) -> SessionResult<Session> {
-        let session_id = generate_session_id();
-        let ttl = ttl.unwrap_or(self.config.default_ttl);
-
-        // Enforce max TTL
-        let ttl = if ttl > self.config.max_ttl {
-            self.config.max_ttl
-        } else {
-            ttl
-        };
-
-        let session = Session::new(&session_id, ttl);
+        // Random 256-bit ID, sliding TTL clamped to `max_ttl`, absolute
+        // lifetime `max_ttl`.
+        let session = self.config.new_session(ttl);
 
         // Save the session
         self.save(&session).await?;
@@ -246,8 +236,9 @@ impl SessionStore for CouchDbSessionStore {
             .await
             .map_err(|e| SessionError::Deserialization(e.to_string()))?;
 
-        // Check if expired
-        if doc.session.is_expired() {
+        // Expired (sliding/absolute), idle too long, or not the document we
+        // asked for: treat as missing and drop it.
+        if !self.config.is_live(&doc.session) || doc.session.id != session_id {
             self.delete(session_id).await?;
             return Ok(None);
         }
@@ -343,22 +334,16 @@ impl SessionStore for CouchDbSessionStore {
     }
 
     async fn exists(&self, session_id: &str) -> SessionResult<bool> {
-        match self.get(session_id).await? {
-            Some(session) => Ok(!session.is_expired()),
-            None => Ok(false),
-        }
+        Ok(self.get(session_id).await?.is_some())
     }
 
     async fn extend(&self, session_id: &str, ttl: Duration) -> SessionResult<()> {
         if let Some(mut session) = self.get(session_id).await? {
-            // Enforce max TTL
-            let ttl = if ttl > self.config.max_ttl {
-                self.config.max_ttl
-            } else {
-                ttl
-            };
-
-            session.extend(ttl);
+            // `Session::extend` clamps to the absolute expiry (`max_ttl`
+            // from creation); extending is activity, so it also resets the
+            // idle clock.
+            session.extend(ttl.min(self.config.max_ttl));
+            session.touch();
             self.save(&session).await?;
         }
 
@@ -555,6 +540,8 @@ mod tests {
             "_design/sessions",
             "_local/foo",
             "not-a-uuid",
+            // The old UUIDv4 format is no longer a valid session ID.
+            "550e8400-e29b-41d4-a716-446655440000",
             "",
         ]
     }
@@ -621,12 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn doc_id_accepts_well_formed_uuid() {
+    fn doc_id_accepts_generated_session_id() {
         let store = make_store();
-        let session_id = generate_session_id();
+        let session_id = crate::generate_session_id();
         let doc_id = store
             .doc_id(&session_id)
-            .expect("well-formed UUID accepted");
+            .expect("generated session ID accepted");
         assert_eq!(doc_id, format!("session:{session_id}"));
     }
 

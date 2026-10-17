@@ -4,7 +4,7 @@
 
 use crate::config::SessionConfig;
 use crate::error::{SessionError, SessionResult};
-use crate::traits::{Session, SessionStore, generate_session_id};
+use crate::traits::{Session, SessionStore};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,6 +72,7 @@ impl MemcachedSessionStore {
     /// # }
     /// ```
     pub async fn new(config: SessionConfig) -> SessionResult<Self> {
+        config.validate()?;
         let client = memcache::connect(config.url.as_str())
             .map_err(|e| SessionError::Connection(e.to_string()))?;
 
@@ -81,26 +82,19 @@ impl MemcachedSessionStore {
         })
     }
 
-    /// Get the session key for a given session ID.
-    fn session_key(&self, session_id: &str) -> String {
-        self.config.session_key(session_id)
+    /// Get the validated session key for a given session ID
+    /// (see [`SessionConfig::checked_session_key`]).
+    fn session_key(&self, session_id: &str) -> SessionResult<String> {
+        self.config.checked_session_key(session_id)
     }
 }
 
 #[async_trait]
 impl SessionStore for MemcachedSessionStore {
     async fn create(&self, ttl: Option<Duration>) -> SessionResult<Session> {
-        let session_id = generate_session_id();
-        let ttl = ttl.unwrap_or(self.config.default_ttl);
-
-        // Enforce max TTL
-        let ttl = if ttl > self.config.max_ttl {
-            self.config.max_ttl
-        } else {
-            ttl
-        };
-
-        let session = Session::new(&session_id, ttl);
+        // Random 256-bit ID, sliding TTL clamped to `max_ttl`, absolute
+        // lifetime `max_ttl`.
+        let session = self.config.new_session(ttl);
 
         // Save the session
         self.save(&session).await?;
@@ -109,7 +103,7 @@ impl SessionStore for MemcachedSessionStore {
     }
 
     async fn get(&self, session_id: &str) -> SessionResult<Option<Session>> {
-        let key = self.session_key(session_id);
+        let key = self.session_key(session_id)?;
         let client = self.client.lock().await;
 
         let data: Option<String> = client
@@ -121,8 +115,9 @@ impl SessionStore for MemcachedSessionStore {
                 let session: Session = serde_json::from_str(&json)
                     .map_err(|e| SessionError::Deserialization(e.to_string()))?;
 
-                // Check if expired
-                if session.is_expired() {
+                // Expired (sliding/absolute), idle too long, or not the
+                // document we asked for: treat as missing and drop it.
+                if !self.config.is_live(&session) || session.id != session_id {
                     drop(client); // Release lock before calling delete
                     self.delete(session_id).await?;
                     return Ok(None);
@@ -135,27 +130,36 @@ impl SessionStore for MemcachedSessionStore {
     }
 
     async fn save(&self, session: &Session) -> SessionResult<()> {
-        let key = self.session_key(&session.id);
+        let key = self.session_key(&session.id)?;
         let client = self.client.lock().await;
 
         let json = serde_json::to_string(session)
             .map_err(|e| SessionError::Serialization(e.to_string()))?;
 
-        // Calculate remaining TTL
+        // Calculate remaining TTL. Memcached treats an expiry above 30 days
+        // as an absolute Unix timestamp, so cap the relative value there.
+        const MEMCACHED_MAX_RELATIVE_TTL: i64 = 60 * 60 * 24 * 30;
         let now = chrono::Utc::now();
-        let remaining = (session.expires_at - now).num_seconds().max(0) as u32;
+        let remaining = (session.expires_at.min(session.absolute_expires_at) - now)
+            .num_seconds()
+            .clamp(0, MEMCACHED_MAX_RELATIVE_TTL) as u32;
 
-        if remaining > 0 {
-            client
-                .set(&key, json.as_str(), remaining)
-                .map_err(|e| SessionError::Other(e.to_string()))?;
+        // Like the Redis store: an already-expired session cannot be saved,
+        // and saying so beats a silent no-op that `create()` would turn into
+        // a session that was never persisted.
+        if remaining == 0 {
+            return Err(SessionError::Expired("session already expired".to_string()));
         }
+
+        client
+            .set(&key, json.as_str(), remaining)
+            .map_err(|e| SessionError::Other(e.to_string()))?;
 
         Ok(())
     }
 
     async fn delete(&self, session_id: &str) -> SessionResult<()> {
-        let key = self.session_key(session_id);
+        let key = self.session_key(session_id)?;
         let client = self.client.lock().await;
 
         // Memcached delete returns false if key doesn't exist, which is fine
@@ -165,22 +169,16 @@ impl SessionStore for MemcachedSessionStore {
     }
 
     async fn exists(&self, session_id: &str) -> SessionResult<bool> {
-        match self.get(session_id).await? {
-            Some(session) => Ok(!session.is_expired()),
-            None => Ok(false),
-        }
+        Ok(self.get(session_id).await?.is_some())
     }
 
     async fn extend(&self, session_id: &str, ttl: Duration) -> SessionResult<()> {
         if let Some(mut session) = self.get(session_id).await? {
-            // Enforce max TTL
-            let ttl = if ttl > self.config.max_ttl {
-                self.config.max_ttl
-            } else {
-                ttl
-            };
-
-            session.extend(ttl);
+            // `Session::extend` clamps to the absolute expiry (`max_ttl`
+            // from creation); extending is activity, so it also resets the
+            // idle clock.
+            session.extend(ttl.min(self.config.max_ttl));
+            session.touch();
             self.save(&session).await?;
         }
 
@@ -228,5 +226,30 @@ mod tests {
     fn test_session_key_generation() {
         let config = SessionConfig::memcached("memcache://localhost:11211").unwrap();
         assert!(config.session_key("test-id").starts_with("session:"));
+    }
+
+    #[test]
+    fn protocol_injection_ids_are_rejected_before_reaching_memcached() {
+        let config = SessionConfig::memcached("memcache://localhost:11211").unwrap();
+        for bad in [
+            "a\r\nset x",
+            "a\r\nset x 0 0 1\r\nX\r\n",
+            "a b",
+            "a\0b",
+            "\u{7f}",
+            &"a".repeat(300),
+        ] {
+            assert!(
+                matches!(
+                    config.checked_session_key(bad),
+                    Err(SessionError::InvalidSessionId(_))
+                ),
+                "expected rejection for {bad:?}"
+            );
+        }
+        let good = crate::generate_session_id();
+        let key = config.checked_session_key(&good).unwrap();
+        assert!(key.len() <= crate::config::MEMCACHED_MAX_KEY_LEN);
+        assert!(!key.bytes().any(|b| b.is_ascii_control() || b == b' '));
     }
 }
