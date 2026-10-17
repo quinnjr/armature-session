@@ -9,6 +9,8 @@ Earlier changes are recorded in the workspace [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
 ### Security
 
 - **Session fixation:** new `SessionStore::regenerate(old_id)` (default trait method) issues a fresh ID for an existing session, carries its data over, and deletes the old ID. Call it after login or any privilege change.
