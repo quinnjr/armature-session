@@ -2,7 +2,7 @@
 
 use crate::config::SessionConfig;
 use crate::error::{SessionError, SessionResult};
-use crate::traits::{Session, SessionStore, generate_session_id};
+use crate::traits::{Session, SessionStore};
 use armature_log::{debug, info};
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -65,6 +65,7 @@ impl RedisSessionStore {
     /// # }
     /// ```
     pub async fn new(config: SessionConfig) -> SessionResult<Self> {
+        config.validate()?;
         info!("Initializing Redis session store");
         debug!("Session namespace: {}", config.namespace);
 
@@ -79,26 +80,19 @@ impl RedisSessionStore {
         Ok(Self { conn, config })
     }
 
-    /// Get the session key for a given session ID.
-    fn session_key(&self, session_id: &str) -> String {
-        self.config.session_key(session_id)
+    /// Get the validated session key for a given session ID
+    /// (see [`SessionConfig::checked_session_key`]).
+    fn session_key(&self, session_id: &str) -> SessionResult<String> {
+        self.config.checked_session_key(session_id)
     }
 }
 
 #[async_trait]
 impl SessionStore for RedisSessionStore {
     async fn create(&self, ttl: Option<Duration>) -> SessionResult<Session> {
-        let session_id = generate_session_id();
-        let ttl = ttl.unwrap_or(self.config.default_ttl);
-
-        // Enforce max TTL
-        let ttl = if ttl > self.config.max_ttl {
-            self.config.max_ttl
-        } else {
-            ttl
-        };
-
-        let session = Session::new(&session_id, ttl);
+        // Random 256-bit ID, sliding TTL clamped to `max_ttl`, absolute
+        // lifetime `max_ttl`.
+        let session = self.config.new_session(ttl);
 
         // Save the session
         self.save(&session).await?;
@@ -107,7 +101,7 @@ impl SessionStore for RedisSessionStore {
     }
 
     async fn get(&self, session_id: &str) -> SessionResult<Option<Session>> {
-        let key = self.session_key(session_id);
+        let key = self.session_key(session_id)?;
         let mut conn = self.conn.clone();
 
         let data: Option<String> = conn.get(&key).await?;
@@ -117,8 +111,9 @@ impl SessionStore for RedisSessionStore {
                 let session: Session = serde_json::from_str(&json)
                     .map_err(|e| SessionError::Deserialization(e.to_string()))?;
 
-                // Check if expired
-                if session.is_expired() {
+                // Expired (sliding/absolute), idle too long, or not the
+                // document we asked for: treat as missing and drop it.
+                if !self.config.is_live(&session) || session.id != session_id {
                     self.delete(session_id).await?;
                     return Ok(None);
                 }
@@ -130,7 +125,7 @@ impl SessionStore for RedisSessionStore {
     }
 
     async fn save(&self, session: &Session) -> SessionResult<()> {
-        let key = self.session_key(&session.id);
+        let key = self.session_key(&session.id)?;
         let mut conn = self.conn.clone();
 
         let json = serde_json::to_string(session)
@@ -138,7 +133,9 @@ impl SessionStore for RedisSessionStore {
 
         // Calculate remaining TTL
         let now = chrono::Utc::now();
-        let remaining = (session.expires_at - now).num_seconds().max(0) as u64;
+        let remaining = (session.expires_at.min(session.absolute_expires_at) - now)
+            .num_seconds()
+            .max(0) as u64;
 
         // A non-positive TTL means the session is already expired, so there is
         // nothing sensible to write. Returning `Ok(())` for it made `save` a
@@ -146,7 +143,7 @@ impl SessionStore for RedisSessionStore {
         // persisted, and the caller would only find out when the next request
         // came back unauthenticated.
         if remaining == 0 {
-            return Err(SessionError::Expired(session.id.clone()));
+            return Err(SessionError::Expired("session already expired".to_string()));
         }
 
         let _: () = conn.set_ex(&key, json, remaining).await?;
@@ -155,7 +152,7 @@ impl SessionStore for RedisSessionStore {
     }
 
     async fn delete(&self, session_id: &str) -> SessionResult<()> {
-        let key = self.session_key(session_id);
+        let key = self.session_key(session_id)?;
         let mut conn = self.conn.clone();
 
         let _: () = conn.del(&key).await?;
@@ -164,27 +161,19 @@ impl SessionStore for RedisSessionStore {
     }
 
     async fn exists(&self, session_id: &str) -> SessionResult<bool> {
-        let key = self.session_key(session_id);
-        let mut conn = self.conn.clone();
-
-        // `save()` always writes the key with a TTL, so a present key is a
-        // live (non-expired) session. EXISTS alone is authoritative here;
-        // there is no need for a second GET + deserialize round-trip.
-        let exists: bool = conn.exists(&key).await?;
-
-        Ok(exists)
+        // A present key is not enough: the session may be idle past
+        // `idle_timeout` (Redis's TTL only tracks the sliding expiry), so go
+        // through `get`, which applies every liveness rule.
+        Ok(self.get(session_id).await?.is_some())
     }
 
     async fn extend(&self, session_id: &str, ttl: Duration) -> SessionResult<()> {
         if let Some(mut session) = self.get(session_id).await? {
-            // Enforce max TTL
-            let ttl = if ttl > self.config.max_ttl {
-                self.config.max_ttl
-            } else {
-                ttl
-            };
-
-            session.extend(ttl);
+            // `Session::extend` clamps to the absolute expiry (`max_ttl`
+            // from creation); extending is activity, so it also resets the
+            // idle clock.
+            session.extend(ttl.min(self.config.max_ttl));
+            session.touch();
             self.save(&session).await?;
         }
 

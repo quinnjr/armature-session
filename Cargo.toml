@@ -1,6 +1,6 @@
 [package]
 name = "armature-session"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.94.1"
 authors = ["Joseph Quinn <quinn.josephr@proton.me>"]
@@ -13,20 +13,22 @@ categories = ["web-programming", "caching"]
 
 [dependencies]
 # Logging
-armature-log = { version = "0.2" }
+armature-log = { version = "0.3" }
 
 # Core dependencies
 async-trait = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.53", features = ["full"] }
-futures = "0.3"
-uuid = { version = "1.26", features = ["v4"] }
+# Only `sync` (the memcached store's async Mutex) is needed at runtime; the
+# Redis client brings its own runtime glue via `redis/tokio-comp`.
+tokio = { version = "1.53", features = ["sync"] }
+# Session IDs: 256 bits straight from the OS CSPRNG.
+getrandom = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Redis support (default) - uses armature-redis for DI integration
-armature-redis = { version = "0.2", optional = true }
+armature-redis = { version = "0.3", optional = true }
 redis = { version = "1.7", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Memcached support (optional feature flag)
@@ -40,12 +42,17 @@ reqwest = { version = "0.13", features = ["json", "rustls"], default-features = 
 default = ["redis"]
 redis = ["dep:redis", "armature-redis"]
 memcached = ["dep:memcache"]
-memcached-tls = ["memcache/tls"]  # Requires openssl
+# OPT-IN OPENSSL EXCEPTION: `memcache` 0.21 only implements TLS through the
+# `openssl` crate (no rustls backend exists), so enabling this feature links
+# OpenSSL, contrary to the workspace's rustls-only policy. It is deliberately
+# NOT part of `full`. Prefer a TLS-terminating sidecar (e.g. stunnel) or a
+# private network for memcached and leave this feature off.
+memcached-tls = ["memcached", "memcache/tls"]
 couchdb = ["dep:reqwest"]
 # All backends
 full = ["redis", "memcached", "couchdb"]
 
 [dev-dependencies]
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
-tokio = { version = "1.53", features = ["full", "test-util"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "test-util"] }
 
