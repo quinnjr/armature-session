@@ -63,7 +63,7 @@
 //!         .with_namespace("myapp:session")
 //!         .with_default_ttl(Duration::from_secs(3600));
 //!
-//!     let store = RedisSessionStore::new(config).await?;
+//!     let store = RedisSessionStore::new(config.clone()).await?;
 //!
 //!     // Create a new session
 //!     let mut session = store.create(None).await?;
@@ -78,6 +78,13 @@
 //!         let user_id: Option<i32> = session.get("user_id");
 //!         println!("User ID: {:?}", user_id);
 //!     }
+//!
+//!     // After login (any privilege change), rotate the ID to defeat
+//!     // session fixation, and hand the new ID to the browser in a hardened
+//!     // cookie (`__Host-` prefix, Secure, HttpOnly, SameSite=Lax).
+//!     let session = store.regenerate(&session.id).await?;
+//!     let cookie = SessionCookie::new("sid").host_prefix(true).max_age_from(&config);
+//!     let _set_cookie = cookie.to_header_value(&session.id)?;
 //!
 //!     // Delete session (logout)
 //!     store.delete(&session.id).await?;
@@ -122,6 +129,7 @@
 //! ```
 
 pub mod config;
+pub mod cookie;
 pub mod error;
 pub mod traits;
 
@@ -135,8 +143,12 @@ pub mod memcached_session;
 pub mod couchdb_session;
 
 pub use config::{SessionBackend, SessionConfig};
+pub use cookie::{SameSite, SessionCookie};
 pub use error::{SessionError, SessionResult};
-pub use traits::{Session, SessionStore, generate_session_id};
+pub use traits::{
+    SESSION_ID_BYTES, SESSION_ID_LEN, Session, SessionStore, generate_session_id,
+    validate_session_id,
+};
 
 #[cfg(feature = "redis")]
 pub use redis_session::RedisSessionStore;
@@ -150,8 +162,9 @@ pub use couchdb_session::CouchDbSessionStore;
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::config::{SessionBackend, SessionConfig};
+    pub use crate::cookie::{SameSite, SessionCookie};
     pub use crate::error::{SessionError, SessionResult};
-    pub use crate::traits::{Session, SessionStore, generate_session_id};
+    pub use crate::traits::{Session, SessionStore, generate_session_id, validate_session_id};
 
     #[cfg(feature = "redis")]
     pub use crate::redis_session::RedisSessionStore;
